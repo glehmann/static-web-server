@@ -6,12 +6,12 @@
 //! Module that provides all settings of SWS.
 //!
 
+use crate::{Context, Result};
 use clap::Parser;
 use globset::{Glob, GlobMatcher};
 use headers::HeaderMap;
 use hyper::StatusCode;
-
-use crate::{Context, Result};
+use wax::{BuildError as WaxBuildErr, Glob as WaxGlob};
 
 pub mod cli;
 pub mod file;
@@ -34,7 +34,7 @@ pub struct Headers {
 /// The `Rewrites` file options.
 pub struct Rewrites {
     /// Source pattern glob matcher
-    pub source: GlobMatcher,
+    pub source: WaxGlob<'static>,
     /// A local file that must exist
     pub destination: String,
     /// Optional redirect type either 301 (Moved Permanently) or 302 (Found).
@@ -319,15 +319,21 @@ impl Settings {
 
                             // Compile a glob pattern for each rewrite sources entry
                             for rewrites_entry in rewrites_entries.iter() {
-                                let source = Glob::new(&rewrites_entry.source)
-                                    .with_context(|| {
-                                        format!(
+                                let src = &rewrites_entry.source;
+                                let source = match WaxGlob::new(src)
+                                    .map(WaxGlob::into_owned)
+                                    .map_err(WaxBuildErr::into_owned)
+                                {
+                                    Ok(g) => g,
+                                    Err(er) => {
+                                        return Err(anyhow!(er)).with_context(|| {
+                                            format!(
                                             "can not compile glob pattern for rewrite source: {}",
-                                            &rewrites_entry.source
+                                            &src
                                         )
-                                    })?
-                                    .compile_matcher();
-
+                                        })?
+                                    }
+                                };
                                 rewrites_vec.push(Rewrites {
                                     source,
                                     destination: rewrites_entry.destination.to_owned(),

@@ -110,7 +110,7 @@ kind = 302
 
 [[advanced.rewrites]]
 source = "**/*.{png,gif}"
-destination = "/assets/favicon.ico"
+destination = "/assets/$1.$2"
 # redirect = 301
 
 [[advanced.rewrites]]

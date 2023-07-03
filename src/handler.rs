@@ -6,6 +6,7 @@
 //! Request handler module intended to manage incoming HTTP requests.
 //!
 
+use aho_corasick::AhoCorasick;
 use headers::HeaderValue;
 use hyper::{Body, Request, Response, StatusCode};
 use std::{future::Future, net::IpAddr, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -99,7 +100,7 @@ impl RequestHandler {
         let uri = req.uri();
 
         let base_path = &self.opts.root_dir;
-        let mut uri_path = uri.path();
+        let mut uri_path = uri.path().to_owned();
         let uri_query = uri.query();
         #[cfg(feature = "directory-listing")]
         let dir_listing = self.opts.dir_listing;
@@ -205,7 +206,7 @@ impl RequestHandler {
             // Advanced options
             if let Some(advanced) = &self.opts.advanced_opts {
                 // Redirects
-                if let Some(parts) = redirects::get_redirection(uri_path, &advanced.redirects) {
+                if let Some(parts) = redirects::get_redirection(&uri_path, &advanced.redirects) {
                     let (uri_dest, status) = parts;
                     match HeaderValue::from_str(uri_dest) {
                         Ok(loc) => {
@@ -232,10 +233,45 @@ impl RequestHandler {
                 }
 
                 // Rewrites
-                if let Some(rewrite) = rewrites::rewrite_uri_path(uri_path, &advanced.rewrites) {
-                    uri_path = rewrite.destination.as_str();
+                if let Some((rewrite, matched)) =
+                    rewrites::rewrite_uri_path(&uri_path.clone(), &advanced.rewrites)
+                {
+                    let captures_count = rewrite.source.captures().count();
+                    let mut captures = Vec::<&str>::with_capacity(captures_count);
+                    let mut matches = 0_usize;
+                    let mut i = 0_usize;
+                    loop {
+                        if matches == captures_count {
+                            break;
+                        }
+                        if let Some(s) = matched.get(i) {
+                            captures.push(s);
+                            matches += 1;
+                        }
+                        i += 1;
+                    }
+
+                    let dest = rewrite.destination.as_str();
+                    let patterns = (0..captures_count)
+                        .map(|i| format!("${}", i))
+                        .collect::<Vec<String>>();
+
+                    tracing::debug!("url rewrites glob patterns: {:?}", patterns);
+                    tracing::debug!("url rewrites glob pattern captures: {:?}", captures);
+                    tracing::debug!("url rewrites glob pattern destination: {:?}", dest);
+
+                    if let Ok(ac) = AhoCorasick::new(patterns) {
+                        if let Ok(dest) = ac.try_replace_all(dest, &captures) {
+                            tracing::debug!(
+                                "url rewrites glob patterns destination replaced: {:?}",
+                                dest
+                            );
+                            uri_path = dest;
+                        }
+                    }
+
                     if let Some(redirect_type) = &rewrite.redirect {
-                        let loc = match HeaderValue::from_str(uri_path) {
+                        let loc = match HeaderValue::from_str(&uri_path) {
                             Ok(val) => val,
                             Err(err) => {
                                 tracing::error!("invalid header value from current uri: {:?}", err);
@@ -258,6 +294,8 @@ impl RequestHandler {
                     }
                 }
             }
+
+            let uri_path = &uri_path;
 
             // Static files
             match static_files::handle(&HandleOpts {
